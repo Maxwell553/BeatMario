@@ -1,0 +1,465 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Mario Champion</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    background: #141018;
+    color: #f4efe4;
+    font-family: "Courier New", Courier, monospace;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 24px 16px 32px;
+  }
+  h1 {
+    margin: 0 0 4px;
+    font-size: 22px;
+    letter-spacing: 0.14em;
+  }
+  p.sub { margin: 0 0 16px; color: #c8bfb0; font-size: 13px; }
+  canvas {
+    width: min(96vw, 960px);
+    height: auto;
+    background: #000;
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+    box-shadow: 0 16px 50px rgba(0,0,0,.45);
+    border: 4px solid #2a2420;
+  }
+  .bar {
+    width: min(96vw, 960px);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+    margin-top: 12px;
+  }
+  button, select {
+    background: #2a2420;
+    color: #f4efe4;
+    border: 1px solid #6b5a48;
+    font-family: inherit;
+    font-size: 13px;
+    padding: 6px 10px;
+    cursor: pointer;
+  }
+  button.on { background: #e52521; border-color: #e52521; color: white; }
+  #result { margin-left: auto; letter-spacing: 0.08em; }
+</style>
+</head>
+<body>
+  <h1>MARIO</h1>
+  <p class="sub">Eight worlds, thirty-two courses, in the classic side-scroller style. Layouts are original. The champion plays them.</p>
+  <canvas id="screen" width="768" height="720"></canvas>
+  <div class="bar">
+    <button id="play" type="button">Pause</button>
+    <button id="sp1" type="button">1x</button>
+    <button id="sp2" type="button" class="on">2x</button>
+    <button id="sp4" type="button">4x</button>
+    <button id="sp8" type="button">8x</button>
+    <select id="level"></select>
+    <span id="result">RUNNING</span>
+  </div>
+<script>
+const DATA = /*__REPLAY__*/null;
+const SCALE = 3;
+const VW = 256, VH = 240, TILE = 16;
+const CODE = {0:".",1:"#",2:"B",3:"?",4:"P",5:"=",6:"|",7:"F",8:"~",9:"o",10:"U"};
+const THEMES = {
+  overworld:   {sky:"#5c94fc", hill:"#00a800", ground:"#c84c0c", grass:"#80d010", grassDark:"#008800", speck:"#a03000", cloud:1, bush:1},
+  athletic:    {sky:"#5c94fc", hill:"#00a800", ground:"#c84c0c", grass:"#80d010", grassDark:"#008800", speck:"#a03000", cloud:1, bush:1},
+  underground: {sky:"#000000", hill:null, ground:"#2038ec", grass:"#6b8cff", grassDark:"#1018a0", speck:"#101880", cloud:0},
+  castle:      {sky:"#000000", hill:null, ground:"#808080", grass:"#bcbcbc", grassDark:"#404040", speck:"#404040", cloud:0, lava:1},
+  water:       {sky:"#2038ec", hill:null, ground:"#008844", grass:"#00c800", grassDark:"#006020", speck:"#006030", cloud:0, water:1}
+};
+
+const canvas = document.getElementById("screen");
+const ctx = canvas.getContext("2d");
+ctx.imageSmoothingEnabled = false;
+const resultEl = document.getElementById("result");
+const levelSelect = document.getElementById("level");
+
+let levelIndex = 0;
+let frame = 0;
+let playing = true;
+let speed = 2;
+let card = 0;
+let finished = false;
+const params = new URLSearchParams(location.search);
+if (params.has("fast")) speed = 16;
+
+for (const level of DATA.levels) {
+  const opt = document.createElement("option");
+  opt.value = String(DATA.levels.indexOf(level));
+  opt.textContent = level.name + "  " + level.theme;
+  levelSelect.appendChild(opt);
+}
+
+function themeOf(level) { return THEMES[level.theme] || THEMES.overworld; }
+
+function overrides(level, f) {
+  const map = new Map();
+  for (const ev of level.events) {
+    if (ev[0] > f) break;
+    map.set(ev[1] + "," + ev[2], CODE[ev[3]] || ".");
+  }
+  return map;
+}
+
+function tile(level, map, x, y) {
+  if (y < 0 || y >= level.rows.length || x < 0 || x >= level.rows[0].length) return ".";
+  const key = x + "," + y;
+  if (map.has(key)) return map.get(key);
+  return level.rows[y][x];
+}
+
+function rect(x, y, w, h, color) {
+  ctx.fillStyle = color;
+  ctx.fillRect(x, y, w, h);
+}
+
+function drawTile(ch, x, y, theme, tick, above) {
+  const px = x * TILE, py = y * TILE;
+  const cap = above === "." || above === "o" || above === "|" || above === "F" || above === "~" || above === undefined;
+  if (ch === "#") {
+    rect(px, py, TILE, TILE, theme.ground);
+    if (cap) {
+      rect(px, py, TILE, 5, theme.grass);
+      rect(px, py, TILE, 1, theme.grassDark);
+      rect(px, py + 4, TILE, 1, "#000");
+      rect(px + 2, py + 1, 4, 2, "#d8ff70");
+    } else {
+      rect(px + 4, py + 6, 2, 2, theme.speck);
+      rect(px + 11, py + 11, 2, 2, theme.speck);
+    }
+    if (theme.bush && cap && x % 13 === 5) {
+      rect(px - 2, py - 10, 20, 8, "#00a800");
+      rect(px + 2, py - 16, 12, 8, "#18c818");
+      rect(px + 6, py - 20, 6, 6, "#00a800");
+    }
+  } else if (ch === "B" || ch === "U") {
+    const used = ch === "U";
+    rect(px, py, TILE, TILE, used ? "#ac7c40" : "#c84c0c");
+    rect(px, py, TILE, 1, "#000");
+    rect(px, py + 8, TILE, 1, "#000");
+    rect(px, py + 15, TILE, 1, "#000");
+    rect(px, py, 1, 8, "#000");
+    rect(px + 8, py, 1, 8, "#000");
+    rect(px + 15, py, 1, 8, "#000");
+    rect(px + 4, py + 8, 1, 8, "#000");
+    rect(px + 12, py + 8, 1, 8, "#000");
+    if (!used) rect(px + 1, py + 1, 6, 3, "#f87830");
+  } else if (ch === "?") {
+    const shine = (tick >> 3) & 3;
+    rect(px, py, TILE, TILE, "#f8d800");
+    rect(px, py, TILE, 1, "#000");
+    rect(px, py, 1, TILE, "#000");
+    rect(px + 15, py, 1, TILE, "#000");
+    rect(px, py + 15, TILE, 1, "#000");
+    rect(px + 2, py + 2, 12, 2, shine === 0 ? "#fff8a0" : "#e8b000");
+    rect(px + 6, py + 4, 4, 2, "#f8f8f8");
+    rect(px + 8, py + 6, 2, 3, "#f8f8f8");
+    rect(px + 6, py + 10, 4, 2, "#f8f8f8");
+  } else if (ch === "P") {
+    const lip = above !== "P";
+    rect(px, py, TILE, TILE, "#00a800");
+    rect(px, py, 3, TILE, "#b8f818");
+    rect(px + 13, py, 3, TILE, "#006800");
+    rect(px + 5, py + (lip ? 4 : 2), 6, TILE, "#000");
+    if (lip) {
+      rect(px - 2, py, 20, 5, "#00a800");
+      rect(px - 2, py, 3, 5, "#b8f818");
+      rect(px + 15, py, 3, 5, "#006800");
+      rect(px - 2, py, 20, 1, "#e0ff80");
+    }
+  } else if (ch === "=") {
+    rect(px, py + 4, TILE, 5, "#f8f8f8");
+    rect(px, py + 4, TILE, 1, "#c0c0c0");
+    rect(px, py + 8, TILE, 1, "#888");
+  } else if (ch === "~") {
+    const shift = (tick >> 3) & 1;
+    rect(px, py, TILE, TILE, shift ? "#e04000" : "#ff7820");
+    rect(px + ((tick >> 2) % 10), py + 3, 6, 3, "#ffe040");
+    rect(px + 2, py + 10, 5, 2, "#c02000");
+  } else if (ch === "o") {
+    const bob = (tick >> 3) & 1;
+    rect(px + 4, py + 3 + bob, 8, 10, "#f8d800");
+    rect(px + 6, py + 4 + bob, 4, 8, "#fff0a0");
+    rect(px + 7, py + 6 + bob, 2, 4, "#f8f8f8");
+  } else if (ch === "|" || ch === "F") {
+    rect(px + 7, py, 2, TILE, "#f8f8f8");
+    if (ch === "F") {
+      rect(px + 5, py, 6, 4, "#00a800");
+      rect(px + 9, py + 4, 10, 8, "#e52521");
+      rect(px + 9, py + 4, 10, 2, "#ff8080");
+    }
+  }
+}
+
+function drawPlayer(x, y, face, grounded, tick) {
+  ctx.save();
+  if (face < 0) {
+    ctx.translate(x + 12, y);
+    ctx.scale(-1, 1);
+    x = 0; y = 0;
+  }
+  const step = grounded ? ((tick >> 2) & 1) : 0;
+  rect(x + 3, y + 0, 8, 3, "#e52521");
+  rect(x + 2, y + 2, 10, 2, "#e52521");
+  rect(x + 4, y + 4, 7, 4, "#fcbcb0");
+  rect(x + 8, y + 5, 2, 2, "#101010");
+  rect(x + 6, y + 7, 4, 1, "#c06030");
+  rect(x + 2, y + 8, 10, 2, "#e52521");
+  rect(x + 3, y + 10, 8, 3, "#2038ec");
+  rect(x + 4, y + 10, 2, 2, "#f8d800");
+  rect(x + 8, y + 10, 2, 2, "#f8d800");
+  if (!grounded) {
+    rect(x + 1, y + 13, 4, 3, "#6b3300");
+    rect(x + 8, y + 13, 4, 3, "#6b3300");
+    rect(x + 10, y + 8, 3, 2, "#fcbcb0");
+  } else {
+    rect(x + 1, y + 13, 4, 3, "#6b3300");
+    rect(x + 7 + step, y + 13, 4, 3, "#6b3300");
+  }
+  ctx.restore();
+}
+
+function drawEnemy(kind, x, y, tick) {
+  const walk = (tick >> 3) & 1;
+  if (kind === "K") {
+    rect(x + 2, y + 8, 12, 10, "#00a800");
+    rect(x + 3, y + 10, 10, 3, "#f8d800");
+    rect(x + 4, y + 9, 8, 2, "#80d010");
+    rect(x + 4, y + 2, 8, 8, "#fcbcb0");
+    rect(x + 5, y + 4, 2, 2, "#101010");
+    rect(x + 9, y + 4, 2, 2, "#101010");
+    rect(x + 2, y + 18, 5, 4, "#f8d800");
+    rect(x + 9, y + 18, 5, 4, "#f8d800");
+    return;
+  }
+  if (kind === "C") {
+    rect(x + 2, y + 3, 12, 7, "#f87820");
+    rect(x + 4, y + 4, 6, 3, "#ffd0a0");
+    rect(x + 10, y + 4, 2, 2, "#101010");
+    rect(x, y + 5, 3, 3, "#f87820");
+    rect(x + 12, y + 1, 4, 3, "#f8f8f8");
+    rect(x + 4, y + 10, 4, 2, "#f87820");
+    return;
+  }
+  if (kind === "W") {
+    rect(x - 4, y + 2, 6, 4, "#f8f8f8");
+    rect(x + 14, y + 2, 6, 4, "#f8f8f8");
+  }
+  rect(x + 1, y + 2, 14, 9, "#c84c0c");
+  rect(x + 3, y + 4, 4, 4, "#f8f8f8");
+  rect(x + 9, y + 4, 4, 4, "#f8f8f8");
+  rect(x + 4, y + 5, 2, 3, "#101010");
+  rect(x + 10, y + 5, 2, 3, "#101010");
+  rect(x + 2, y, 4, 3, "#000");
+  rect(x + 10, y, 4, 3, "#000");
+  rect(x + (walk ? 1 : 3), y + 11, 5, 4, "#000");
+  rect(x + (walk ? 9 : 8), y + 11, 5, 4, "#000");
+}
+
+function drawBackground(level, cam, tick) {
+  const theme = themeOf(level);
+  rect(0, 0, VW, VH, theme.sky);
+  if (theme.stars) {
+    for (let i = 0; i < 24; i++) {
+      const sx = (i * 53 + (tick >> 4)) % VW;
+      const sy = 16 + (i * 29) % 90;
+      rect(sx, sy, 1, 1, "#f8f8f8");
+    }
+  }
+  if (theme.water) {
+    for (let band = 0; band < 8; band++) {
+      rect(0, 28 + band * 22, VW, 8, band % 2 ? "#3050f8" : "#2848e8");
+    }
+    for (let i = 0; i < 6; i++) {
+      const bx = (i * 48 + (tick >> 2)) % VW;
+      rect(bx, 40 + (i % 3) * 36, 2, 2, "#d0e0ff");
+    }
+  }
+  if (theme.cloud) {
+    for (let i = 0; i < 3; i++) {
+      const cx = ((i * 120 - cam * 0.15) % (VW + 60)) - 16;
+      const cy = 36 + (i % 2) * 22;
+      rect(cx + 8, cy, 24, 8, "#f8f8f8");
+      rect(cx + 4, cy + 4, 36, 8, "#f8f8f8");
+      rect(cx + 12, cy - 6, 12, 8, "#f8f8f8");
+    }
+  }
+  if (theme.hill) {
+    for (let i = 0; i < 4; i++) {
+      const hx = ((i * 140 - cam * 0.3) % (VW + 90)) - 24;
+      rect(hx + 8, 176, 40, 16, theme.hill);
+      rect(hx + 16, 164, 24, 14, theme.hill);
+      rect(hx + 22, 156, 12, 10, theme.hill);
+    }
+  }
+}
+
+function drawHud(level, fr) {
+  const coins = fr[4];
+  const time = fr[5];
+  const score = coins * 200 + fr[7] * 100;
+  ctx.font = "bold 8px Courier New";
+  function label(text, x, y) {
+    ctx.fillStyle = "#101010";
+    ctx.fillText(text, x + 1, y + 1);
+    ctx.fillStyle = "#f8f8f8";
+    ctx.fillText(text, x, y);
+  }
+  label("MARIO", 16, 10);
+  label(String(score).padStart(6, "0"), 16, 19);
+  rect(88, 12, 6, 6, "#f8d800");
+  label("x" + String(coins).padStart(2, "0"), 96, 19);
+  label("WORLD", 136, 10);
+  label(level.name, 144, 19);
+  label("TIME", 200, 10);
+  label(String(time).padStart(3, "0"), 204, 19);
+}
+
+function drawCard(text, sub) {
+  ctx.fillStyle = "rgba(0,0,0,.55)";
+  rect(0, 0, VW, VH);
+  ctx.fillStyle = "#f8f8f8";
+  ctx.font = "16px Courier New";
+  ctx.textAlign = "center";
+  ctx.fillText(text, VW / 2, 108);
+  ctx.font = "8px Courier New";
+  ctx.fillText(sub, VW / 2, 126);
+  ctx.textAlign = "left";
+}
+
+function render() {
+  const level = DATA.levels[levelIndex];
+  const fIndex = Math.min(frame, level.frames.length - 1);
+  const fr = level.frames[fIndex];
+  const camMax = Math.max(0, level.rows[0].length * TILE - VW);
+  const cam = Math.max(0, Math.min(camMax, fr[0] - 96));
+  const map = overrides(level, fIndex);
+  const tick = fIndex;
+  ctx.setTransform(SCALE, 0, 0, SCALE, 0, 0);
+  drawBackground(level, cam, tick);
+  const x0 = Math.max(0, Math.floor(cam / TILE) - 1);
+  const x1 = Math.min(level.rows[0].length, Math.ceil((cam + VW) / TILE) + 1);
+  for (let y = 0; y < level.rows.length; y++) {
+    for (let x = x0; x < x1; x++) {
+      const ch = tile(level, map, x, y);
+      if (ch === ".") continue;
+      const above = y > 0 ? tile(level, map, x, y - 1) : ".";
+      ctx.save();
+      ctx.translate(-cam, 0);
+      if ((themeOf(level).lava) && ch === "." ) {
+        /* pits stay empty; lava tiles draw themselves */
+      }
+      drawTile(ch, x, y, themeOf(level), tick, above);
+      ctx.restore();
+    }
+  }
+  ctx.save();
+  ctx.translate(-cam, 0);
+  const kinds = level.kinds;
+  for (let i = 0; i < kinds.length; i++) {
+    const base = 8 + i * 3;
+    if (!fr[base + 2]) continue;
+    drawEnemy(kinds[i], fr[base], fr[base + 1], tick);
+  }
+  drawPlayer(fr[0], fr[1], fr[2], fr[3], tick);
+  ctx.restore();
+  drawHud(level, fr);
+  if (card > 0 && levelIndex < DATA.levels.length) {
+    drawCard("WORLD " + level.name, level.theme.toUpperCase());
+  }
+  if (finished) {
+    drawCard("GAME CLEAR", "32/32  DEATHS 0  COINS " + DATA.coins);
+  }
+}
+
+function stepPlayback() {
+  if (!playing) return;
+  if (finished) return;
+  if (card > 0) {
+    card -= speed;
+    return;
+  }
+  const level = DATA.levels[levelIndex];
+  frame += speed;
+  if (frame >= level.frames.length) {
+    frame = level.frames.length - 1;
+    if (levelIndex < DATA.levels.length - 1) {
+      levelIndex += 1;
+      frame = 0;
+      card = 36;
+      levelSelect.value = String(levelIndex);
+    } else {
+      finished = true;
+      playing = false;
+      resultEl.textContent = "GAME CLEAR";
+      document.getElementById("play").textContent = "Replay";
+    }
+  }
+}
+
+function loop() {
+  if (playing && !finished) stepPlayback();
+  render();
+  if (params.has("fast") && finished) {
+    resultEl.dataset.done = "1";
+    return;
+  }
+  requestAnimationFrame(loop);
+}
+
+document.getElementById("play").onclick = () => {
+  if (finished) {
+    finished = false;
+    levelIndex = 0;
+    frame = 0;
+    card = 0;
+    levelSelect.value = "0";
+    resultEl.textContent = "RUNNING";
+  }
+  playing = !playing;
+  document.getElementById("play").textContent = playing ? "Pause" : "Play";
+  if (playing) requestAnimationFrame(loop);
+};
+for (const [id, value] of [["sp1", 1], ["sp2", 2], ["sp4", 4], ["sp8", 8]]) {
+  document.getElementById(id).onclick = () => {
+    speed = value;
+    for (const btn of document.querySelectorAll(".bar button")) btn.classList.remove("on");
+    document.getElementById(id).classList.add("on");
+  };
+}
+levelSelect.onchange = () => {
+  levelIndex = Number(levelSelect.value);
+  frame = 0;
+  card = 0;
+  finished = false;
+  resultEl.textContent = "RUNNING";
+  playing = true;
+  document.getElementById("play").textContent = "Pause";
+};
+window.__replay = {
+  seek(level, f) {
+    levelIndex = level;
+    frame = f;
+    card = 0;
+    finished = false;
+    levelSelect.value = String(level);
+    resultEl.textContent = "RUNNING";
+    render();
+  },
+  data: DATA
+};
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
